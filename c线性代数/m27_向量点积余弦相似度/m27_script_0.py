@@ -2,7 +2,7 @@
 通过代码证明 余弦值 同向≈1、v3垂直≈0、反向≈-1
 """
 import numpy as np
-from function.plot_vectors import plot_vectors
+from function.plot import plot_vectors
 
 #造数据
 v_0 = np.array([0, 3])

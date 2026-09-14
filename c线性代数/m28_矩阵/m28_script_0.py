@@ -1,4 +1,4 @@
-from function.plot_vectors import plot_vectors
+from function.plot import plot_vectors
 import numpy as np
 
 def calc(v, M, title):

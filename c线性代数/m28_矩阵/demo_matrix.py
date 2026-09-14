@@ -10,7 +10,7 @@ demo_matrix.py —— 「矩阵 = 变换机器」的参考脚手架
 """
 
 import numpy as np
-from function.plot_vectors import plot_vectors
+from function.plot import plot_vectors
 
 
 # ── 第 1 步：定义一个 2×2 矩阵 ────────────────────

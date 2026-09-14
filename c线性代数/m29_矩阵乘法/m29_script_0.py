@@ -1,5 +1,5 @@
 import numpy as np
-from function.plot_vectors  import plot_vectors
+from function.plot  import plot_vectors
 
 # 数据
 A = np.array([
