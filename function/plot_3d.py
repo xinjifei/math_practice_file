@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-# plot_vectors_3d.py —— 三维版 plot：一个函数画点 / 向量（可叠加在同一画布，基于 plotly）
+# plot_3d.py —— 三维画图工具（基于 plotly），干三件事：
+#   1) plot_3d / plot_vectors_3d：画点 / 向量，可叠加在同一画布
+#   2) plot_surface_3d：画二元函数 z = f(x, y) 的曲面
 #
 # 和二维版 plot.py 完全同构，只是坐标从二维升到三维：
 #   统一入口 plot_3d(layers, ...)，layers 每层靠 type 区分：
@@ -227,8 +229,162 @@ def plot_vectors_3d(vectors, title="向量图"):
     return plot_3d([{"type": "vector", "data": vectors}], title=title)
 
 
+def _check_range(rng, name):
+    """校验一个 (min, max) 区间，返回规整成 float 的 (lo, hi)。"""
+    try:
+        lo, hi = rng
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{name} 必须是 (min, max) 两个数，收到的是 {rng!r}"
+        ) from None
+    if not lo < hi:
+        raise ValueError(f"{name} 要满足 min < max，收到的是 ({lo}, {hi})")
+    return lo, hi
+
+
+def _eval_grid(f, X, Y):
+    """在网格 X、Y 上对 f 求值，返回和 X 同形状的 Z。
+
+    f 的三种写法都认：
+      - 整块吃数组（最快，numpy 的自然写法）→ 一次算完
+      - 只吃标量（比如里面有 if x > 0:）────→ 自动退化成逐点算
+      - 返回常数（比如 lambda x, y: 3）─────→ 自动铺满整个网格
+    """
+    try:
+        Z = np.array(f(X, Y), dtype=float)
+    except Exception:
+        # f 不吃数组 → 逐点喂标量。n×n 个点，n 大时会明显变慢
+        Z = np.empty(X.shape, dtype=float)
+        for i in range(X.shape[0]):
+            for j in range(X.shape[1]):
+                Z[i, j] = f(X[i, j], Y[i, j])
+
+    if Z.ndim == 0:                          # 返回标量 → 铺满
+        Z = np.full(X.shape, float(Z))
+    if Z.shape != X.shape:
+        raise ValueError(
+            f"f 在网格上算出的形状是 {Z.shape}，应该和网格 {X.shape} 一致"
+        )
+    return Z
+
+
+def _mask_jumps(Z, factor=0.5):
+    """把"跨过奇点"的采样点抹成 nan，让曲面在那里留洞。
+
+    为什么不能只把 inf 换成 nan 就完事——奇点不一定正好落在采样点上：
+      - 正好踩中：算出 inf → 上一步已经换成 nan 了
+      - 夹在两个采样点中间：算出个巨大的**有限值**，上一步抓不到。
+        plotly 会拿它去定 z 轴范围，整张曲面被压成一块平板。
+        实测 1/(x*y) 在 n=60 时最大到 387，而函数正常值就在 ±1 附近。
+
+    判据：相邻两点之差 > factor × 函数值的典型跨度（p99 - p1）。
+    正常的陡函数（比如 x**10）相邻差再大也小于自己的跨度，不会误伤；
+    跨过奇点的那一对差的是两个爆炸值，必定超标。
+
+    factor 实测标定（n=60，窗口 ±3）：
+      0.2 → 开始误删正常的 x**10（360 个点）
+      0.5 → 奇点全压回合理范围，正常函数一个不删  ← 用它
+      1.0 → 太松，tan 一个洞都不留
+    """
+    finite = Z[np.isfinite(Z)]
+    if finite.size == 0:
+        return Z
+    span = np.percentile(finite, 99) - np.percentile(finite, 1)
+    if not span > 0:
+        return Z                     # 常数函数，没有跨度可比，直接放过
+    thr = factor * span
+
+    bad = np.zeros(Z.shape, dtype=bool)      # 含 nan 处的 diff 也是 nan，
+                                             # nan > thr 为 False，不会误标
+
+    dx = np.abs(np.diff(Z, axis=1)) > thr    # 沿 x 方向的相邻差
+    bad[:, :-1] |= dx
+    bad[:, 1:] |= dx                         # 跳变两侧都抹掉，洞才对称
+
+    dy = np.abs(np.diff(Z, axis=0)) > thr    # 沿 y 方向同理
+    bad[:-1, :] |= dy
+    bad[1:, :] |= dy
+
+    Z[bad] = np.nan
+    return Z
+
+
+def plot_surface_3d(f, x_range=(-3, 3), y_range=(-3, 3), n=60,
+                    mask_jumps=True,
+                    title="曲面", show=True, **surface_kwargs):
+    """画二元函数 z = f(x, y) 的三维曲面（plotly）。
+
+    参数:
+        f : callable
+            二元函数 f(x, y)。整块吃 numpy 数组最快；
+            只吃标量（里面有 if 之类）也行，会自动退化成逐点算；
+            返回常数也行，会自动铺成一个水平面。
+        x_range : (xmin, xmax)
+            x 的窗口，要求 xmin < xmax
+        y_range : (ymin, ymax)
+            y 的窗口，要求 ymin < ymax
+        n : int
+            每个方向的采样点数，网格是 n×n。至少 2，越大越平滑也越慢
+        mask_jumps : bool
+            True（默认）自动把跨过奇点的采样点抹成洞，细节见 _mask_jumps。
+            不处理的话 1/(x*y)、tan(x) 这类函数的巨大值会把 z 轴拉到天上，
+            整张曲面压成一块平板。正常函数不受影响，可以关掉对比看看。
+        title : str
+            图标题
+        show : bool
+            True 则画完直接 show
+        **surface_kwargs
+            透传给 plotly 的 go.Surface，
+            比如 colorscale="Viridis"、opacity=0.9、showscale=False、contours=...
+
+    返回:
+        plotly.graph_objects.Figure（可以继续 add_trace 叠别的东西，见文件末尾示例）
+
+    例子:
+        plot_surface_3d(lambda x, y: x**2 + y**2)
+        plot_surface_3d(lambda x, y: np.sin(x) * np.cos(y), n=100)
+        plot_surface_3d(lambda x, y: 1 / (x * y), n=120)             # 奇点自动留洞
+        plot_surface_3d(lambda x, y: 1 if x * y > 0 else 0)          # 只吃标量也能画
+    """
+    if not callable(f):
+        raise ValueError(f"f 必须是个函数，收到的是 {type(f).__name__}")
+
+    x_range = _check_range(x_range, "x_range")
+    y_range = _check_range(y_range, "y_range")
+
+    n = int(n)
+    if n < 2:
+        raise ValueError(f"n 至少是 2（少于 2 个点连不成面），收到的是 {n}")
+
+    xs = np.linspace(x_range[0], x_range[1], n)
+    ys = np.linspace(y_range[0], y_range[1], n)
+    X, Y = np.meshgrid(xs, ys)
+
+    Z = _eval_grid(f, X, Y)
+    # 奇点算出的 ±inf 换成 nan → 曲面在那里留洞。
+    # 不换的话 plotly 会拿 ±inf 去定 z 轴范围，整张曲面被压成一块平板。
+    Z[~np.isfinite(Z)] = np.nan
+    if mask_jumps:
+        Z = _mask_jumps(Z)      # 奇点夹在两个采样点中间的情况，见 _mask_jumps
+
+    fig = go.Figure(go.Surface(x=xs, y=ys, z=Z, **surface_kwargs))
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            aspectmode="data",       # 三轴等比例，曲面不变形（和 _finalize_3d 一个道理）
+            xaxis=dict(title="x"),
+            yaxis=dict(title="y"),
+            zaxis=dict(title="z"),
+        ),
+    )
+    if show:
+        fig.show()
+    return fig
+
+
 if __name__ == "__main__":
-    # 自测：向量 + 点叠加，验证两种 type 能画到同一画布
+    # ---- plot_3d：画点 / 向量，可叠加在同一画布 ----
     plot_3d(
         [{"type": "vector", "data": [{"v1": [2, 0, 0]},
                                      {"v2": [0, 0, 0, 0, 1, 0]},
@@ -236,5 +392,18 @@ if __name__ == "__main__":
          {"type": "point",  "data": np.array([[1.0, 0.5, 0.0],
                                               [2.5, 1.0, 1.0],
                                               [3.0, 2.0, 2.0]])}],
-        title="自测：三维向量 + 点叠加",
+        title="三维向量 + 点叠加",
     )
+
+    # ---- plot_surface_3d：画二元函数 z = f(x, y) 的曲面。参数要点：----
+    #   f               —— 直接传函数对象，不加括号
+    #   x_range/y_range —— 定义域窗口，两边可以不一样大
+    #   n               —— 每个方向采样点数，越大越平滑也越慢
+    #   mask_jumps      —— 跨过奇点的采样点自动抹成洞（默认开）
+    # 返回的 fig 还能继续 add_trace 往上叠东西（比如下降路径）
+    plot_surface_3d(lambda x, y: np.sin(x) * np.cos(y),
+                    x_range=(-2 * np.pi, 2 * np.pi),
+                    y_range=(-2 * np.pi, 2 * np.pi),
+                    n=100,
+                    title="z = sin(x)·cos(y)")
+
