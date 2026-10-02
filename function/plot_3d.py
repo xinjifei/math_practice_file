@@ -2,6 +2,18 @@
 # plot_3d.py —— 三维画图工具（基于 plotly），干三件事：
 #   1) plot_3d / plot_vectors_3d：画点 / 向量，可叠加在同一画布
 #   2) plot_surface_3d：画二元函数 z = f(x, y) 的曲面
+#   3) plot_slice_3d：沿 y = x 切一刀，把曲面压成一条曲线 z = f(t, t)
+#
+# 窗口参数。横向和纵向**不是一个规矩**，因为看的东西不一样：
+#   横向 x_range=(中心, 半径)  ——  x_range=(0, 10) → 窗口从 -10 到 10
+#                                 围着一个点开窗口，你只想给那个点
+#   纵向 z_range=(底部, 高度)  ——  z_range=(0, 100) → 窗口从 0 到 100
+#                                 看曲面时关心"碗底打哪开始"，下面不延伸
+#   （旧写法 (min, max) 已废弃——它要求你自己算两头）
+#
+# plot_surface_3d 的窗口分两处：
+#   x_range —— 底面。x 和 y **共用一个窗口**，所以底面永远是正方形
+#   z_range —— 竖直方向
 #
 # 和二维版 plot.py 完全同构，只是坐标从二维升到三维：
 #   统一入口 plot_3d(layers, ...)，layers 每层靠 type 区分：
@@ -229,18 +241,41 @@ def plot_vectors_3d(vectors, title="向量图"):
     return plot_3d([{"type": "vector", "data": vectors}], title=title)
 
 
-def _check_range(rng, name):
-    """校验一个 (min, max) 区间，返回规整成 float 的 (lo, hi)。"""
+def _check_center_radius(cr, name):
+    """校验一个 (中心, 半径) 窗口，返回规整成 float 的 (center, radius)。
+
+    半径是**半宽**：x_range=(0, 10) → 窗口从 -10 到 10。
+    不想自己算两头的时候比 (min, max) 好用——围着某个点开窗口只要写中心。
+    """
     try:
-        lo, hi = rng
-        lo, hi = float(lo), float(hi)
+        c, r = cr
+        c, r = float(c), float(r)
     except (TypeError, ValueError):
         raise ValueError(
-            f"{name} 必须是 (min, max) 两个数，收到的是 {rng!r}"
+            f"{name} 必须是 (中心, 半径) 两个数，收到的是 {cr!r}"
         ) from None
-    if not lo < hi:
-        raise ValueError(f"{name} 要满足 min < max，收到的是 ({lo}, {hi})")
-    return lo, hi
+    if not r > 0:
+        raise ValueError(f"{name} 的半径要大于 0，收到的是 ({c}, {r})")
+    return c, r
+
+
+def _check_bottom_height(bh, name):
+    """校验一个 (底部, 高度) 窗口，返回规整成 float 的 (bottom, height)。
+
+    和高度的关系是**一边**的：z_range=(2500, 100) → 窗口从 2500 到 2600，
+    下面不延伸。竖直方向用它而不是 (中心, 半径)，是因为看曲面时关心的是
+    "碗底打哪开始"，而不是"某个 z 值上下各多少"。
+    """
+    try:
+        b, h = bh
+        b, h = float(b), float(h)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{name} 必须是 (底部, 高度) 两个数，收到的是 {bh!r}"
+        ) from None
+    if not h > 0:
+        raise ValueError(f"{name} 的高度要大于 0，收到的是 ({b}, {h})")
+    return b, h
 
 
 def _eval_grid(f, X, Y):
@@ -265,6 +300,27 @@ def _eval_grid(f, X, Y):
     if Z.shape != X.shape:
         raise ValueError(
             f"f 在网格上算出的形状是 {Z.shape}，应该和网格 {X.shape} 一致"
+        )
+    return Z
+
+
+def _eval_curve(f, xs, ys):
+    """在一条线上对 f 求值（xs、ys 等长），返回和 xs 同形状的 Z。
+
+    和 _eval_grid 一样认三种写法：整块吃数组 / 只吃标量 / 返回常数。
+    区别只在于这里是**一维**的——没有网格，只有一串点。
+    """
+    try:
+        Z = np.array(f(xs, ys), dtype=float)
+    except Exception:
+        # f 不吃数组 → 逐点喂标量
+        Z = np.array([float(f(a, b)) for a, b in zip(xs, ys)])
+
+    if Z.ndim == 0:                          # 返回标量 → 铺满
+        Z = np.full(xs.shape, float(Z))
+    if Z.shape != xs.shape:
+        raise ValueError(
+            f"f 在切片上算出的形状是 {Z.shape}，应该和采样点 {xs.shape} 一致"
         )
     return Z
 
@@ -310,7 +366,7 @@ def _mask_jumps(Z, factor=0.5):
     return Z
 
 
-def plot_surface_3d(f, x_range=(-3, 3), y_range=(-3, 3), n=60,
+def plot_surface_3d(f, x_range=(0, 3), z_range=None, n=60,
                     mask_jumps=True,
                     title="曲面", show=True, **surface_kwargs):
     """画二元函数 z = f(x, y) 的三维曲面（plotly）。
@@ -320,10 +376,16 @@ def plot_surface_3d(f, x_range=(-3, 3), y_range=(-3, 3), n=60,
             二元函数 f(x, y)。整块吃 numpy 数组最快；
             只吃标量（里面有 if 之类）也行，会自动退化成逐点算；
             返回常数也行，会自动铺成一个水平面。
-        x_range : (xmin, xmax)
-            x 的窗口，要求 xmin < xmax
-        y_range : (ymin, ymax)
-            y 的窗口，要求 ymin < ymax
+        x_range : (中心, 半径)
+            **底面**窗口——x 和 y 用同一个。半径是半宽：
+            x_range=(0, 10) → x 和 y 都从 -10 到 10。
+            两个横向因此永远一样长，底面是正方形，图不会被拉歪。
+        z_range : (底部, 高度) 或 None
+            **竖直方向**的显示窗口。第一项是下边缘，第二项是往上多高：
+            z_range=(2500, 100) → z 轴看 2500..2600，下面不延伸。
+            None（默认）表示不限制、交给 plotly 自动定。
+            它同时决定图形的高宽比——函数值比自变量大得多时（比如 x²+y²），
+            不给它就会被拉成一根针。给个窗口，图形才看得成形。
         n : int
             每个方向的采样点数，网格是 n×n。至少 2，越大越平滑也越慢
         mask_jumps : bool
@@ -342,23 +404,32 @@ def plot_surface_3d(f, x_range=(-3, 3), y_range=(-3, 3), n=60,
         plotly.graph_objects.Figure（可以继续 add_trace 叠别的东西，见文件末尾示例）
 
     例子:
-        plot_surface_3d(lambda x, y: x**2 + y**2)
-        plot_surface_3d(lambda x, y: np.sin(x) * np.cos(y), n=100)
-        plot_surface_3d(lambda x, y: 1 / (x * y), n=120)             # 奇点自动留洞
-        plot_surface_3d(lambda x, y: 1 if x * y > 0 else 0)          # 只吃标量也能画
+        plot_surface_3d(lambda x, y: x**2 + y**2)              # 底面 ±3，z 自动
+        plot_surface_3d(lambda x, y: x**2 + y**2,
+                        x_range=(0, 3),                        # x、y 都 ±3
+                        z_range=(0, 24))                       # z 轴看 0..24
+        plot_surface_3d(lambda x, y: np.sin(x) * np.cos(y),
+                        x_range=(0, 2 * np.pi), z_range=(-1.2, 2.4), n=100)
+        plot_surface_3d(lambda x, y: 1 / (x * y), n=120)       # 奇点自动留洞
+        plot_surface_3d(lambda x, y: 1 if x * y > 0 else 0)    # 只吃标量也能画
     """
     if not callable(f):
         raise ValueError(f"f 必须是个函数，收到的是 {type(f).__name__}")
 
-    x_range = _check_range(x_range, "x_range")
-    y_range = _check_range(y_range, "y_range")
+    if "y_range" in surface_kwargs:
+        raise ValueError(
+            "plot_surface_3d 不收 y_range 了——y 的窗口跟 x 一样，"
+            "要控制竖直方向请用 z_range=(中心, 半径)"
+        )
+
+    c, r = _check_center_radius(x_range, "x_range")
 
     n = int(n)
     if n < 2:
         raise ValueError(f"n 至少是 2（少于 2 个点连不成面），收到的是 {n}")
 
-    xs = np.linspace(x_range[0], x_range[1], n)
-    ys = np.linspace(y_range[0], y_range[1], n)
+    xs = np.linspace(c - r, c + r, n)
+    ys = np.linspace(c - r, c + r, n)      # ← y 的窗口跟着 x 走，底面是正方形
     X, Y = np.meshgrid(xs, ys)
 
     Z = _eval_grid(f, X, Y)
@@ -369,15 +440,93 @@ def plot_surface_3d(f, x_range=(-3, 3), y_range=(-3, 3), n=60,
         Z = _mask_jumps(Z)      # 奇点夹在两个采样点中间的情况，见 _mask_jumps
 
     fig = go.Figure(go.Surface(x=xs, y=ys, z=Z, **surface_kwargs))
-    fig.update_layout(
-        title=title,
-        scene=dict(
-            aspectmode="data",       # 三轴等比例，曲面不变形（和 _finalize_3d 一个道理）
-            xaxis=dict(title="x"),
-            yaxis=dict(title="y"),
-            zaxis=dict(title="z"),
-        ),
+
+    scene = dict(
+        aspectmode="data",       # 三轴等比例，曲面不变形（和 _finalize_3d 一个道理）
+        xaxis=dict(title="x", range=[c - r, c + r]),
+        yaxis=dict(title="y", range=[c - r, c + r]),   # 和 x 同一个窗口
+        zaxis=dict(title="z"),
     )
+    if z_range is not None:
+        zb, zh = _check_bottom_height(z_range, "z_range")
+        scene["zaxis"]["range"] = [zb, zb + zh]
+
+    fig.update_layout(title=title, scene=scene)
+    if show:
+        fig.show()
+    return fig
+
+
+def plot_slice_3d(f, x_range=(0, 10), z_range=None, n=100,
+                  title="沿 y = x 的切片", show=True, **line_kwargs):
+    """沿 y = x 切一刀，把 z = f(x, y) 画成一条三维曲线。
+
+    两个自变量被锁成一个：**y 恒等于 x**，于是只剩一个自由变量 t，
+    曲线上的点是 (t, t, f(t, t))。
+
+    什么时候用它：曲面看不清楚的时候。一条曲线比一张曲面好读得多，
+    而且参数再多也能切——曲面只能画两个自变量。
+
+    参数:
+        f : callable
+            二元函数 f(x, y)，和 plot_surface_3d 收的是同一个 f，直接拿来用
+        x_range : (中心, 半径)
+            t 的窗口。x_range=(0, 10) → t 从 -10 到 10，y 跟着一样
+        z_range : (底部, 高度) 或 None
+            z 轴的显示窗口。第一项是下边缘，第二项是往上多高：
+            z_range=(0, 200) → z 轴看 0..200。
+            None（默认）表示不限制、交给 plotly 自动定。
+            函数值跨度很大时给它一个，画面才不会被离群点拉扁
+        n : int
+            采样点数，至少 2，越大越平滑
+        title : str
+        show : bool
+            True 则画完直接 show
+        **line_kwargs
+            改线的样式，透传进 plotly 的 line=dict(...)：
+            比如 color="red"、width=3、dash="dash"
+
+    返回:
+        plotly.graph_objects.Figure（可以继续 add_trace 叠别的东西）
+
+    例子:
+        plot_slice_3d(lambda x, y: x**2 + y**2)                    # t ∈ -10..10
+        plot_slice_3d(lambda x, y: x**2 + y**2,
+                      x_range=(0, 3),                              # t ∈ -3..3
+                      z_range=(0, 24))                             # z 轴看 0..24
+        plot_slice_3d(lambda x, y: x**2 - y**2)                    # 看零附近的形状
+    """
+    if not callable(f):
+        raise ValueError(f"f 必须是个函数，收到的是 {type(f).__name__}")
+
+    c, r = _check_center_radius(x_range, "x_range")
+
+    n = int(n)
+    if n < 2:
+        raise ValueError(f"n 至少是 2（少于 2 个点连不成线），收到的是 {n}")
+
+    ts = np.linspace(c - r, c + r, n)
+    Z = _eval_curve(f, ts, ts)          # ← y 锁死等于 x，就这一行
+    Z[~np.isfinite(Z)] = np.nan
+
+    style = dict(color="#1f77b4", width=6)
+    style.update(line_kwargs)
+
+    fig = go.Figure(go.Scatter3d(
+        x=ts, y=ts, z=Z, mode="lines", line=style))
+
+    xlim = [c - r, c + r]
+    scene = dict(
+        aspectmode="data",       # 三轴等比例，曲线不变形
+        xaxis=dict(title="x", range=xlim),
+        yaxis=dict(title="y", range=xlim),
+        zaxis=dict(title="z"),
+    )
+    if z_range is not None:
+        zb, zh = _check_bottom_height(z_range, "z_range")
+        scene["zaxis"]["range"] = [zb, zb + zh]
+
+    fig.update_layout(title=title, scene=scene, showlegend=False)
     if show:
         fig.show()
     return fig
@@ -396,14 +545,35 @@ if __name__ == "__main__":
     )
 
     # ---- plot_surface_3d：画二元函数 z = f(x, y) 的曲面。参数要点：----
-    #   f               —— 直接传函数对象，不加括号
-    #   x_range/y_range —— 定义域窗口，两边可以不一样大
-    #   n               —— 每个方向采样点数，越大越平滑也越慢
-    #   mask_jumps      —— 跨过奇点的采样点自动抹成洞（默认开）
+    #   f        —— 直接传函数对象，不加括号
+    #   x_range  —— 底面窗口，(中心, 半径)，不是 (min, max)！
+    #                x 和 y 共用它，所以底面永远是正方形
+    #                x_range=(0, 2*np.pi) → 中心 0、半径 2π → 两个横向都是 -2π..2π
+    #   z_range  —— 竖直方向的窗口，规矩不同： (底部, 高度)
+    #                 z_range=(0, 2.4) → z 轴看 0..2.4；不给就自动定
+    #   n        —— 每个方向采样点数，越大越平滑也越慢
+    #   mask_jumps —— 跨过奇点的采样点自动抹成洞（默认开）
     # 返回的 fig 还能继续 add_trace 往上叠东西（比如下降路径）
     plot_surface_3d(lambda x, y: np.sin(x) * np.cos(y),
-                    x_range=(-2 * np.pi, 2 * np.pi),
-                    y_range=(-2 * np.pi, 2 * np.pi),
+                    x_range=(0, 2 * np.pi),
+                    z_range=(-1.2, 2.4),
                     n=100,
                     title="z = sin(x)·cos(y)")
+
+    # ---- 函数值比自变量大得多时，z_range 决定图形的形状 ----
+    # x²+y² 在底面 ±3 上最高到 18，z 轴要是不限，整个盒子高 18、宽 6，
+    # aspectmode="data" 就会把它拉成一根针。给它一个窗口才看得成形。
+    plot_surface_3d(lambda x, y: x**2 + y**2,
+                    x_range=(0, 3),
+                    z_range=(0, 24),
+                    title="x² + y²")
+
+    # ---- plot_slice_3d：沿 y = x 切一刀，曲面变成一条曲线 ----
+    #   y 锁死等于 x，只剩一个自由变量 t → 画出 (t, t, f(t, t))
+    #   x_range 是 (中心, 半径)，z_range 是 (底部, 高度)；z_range 不给就自动定
+    #   x²+y² 在 y=x 上就是 z = 2t²，一条过原点的抛物线
+    plot_slice_3d(lambda x, y: x**2 + y**2,
+                  x_range=(0, 10),   # t 从 -10 到 10
+                  z_range=(0, 220),  # z 轴看 0..220
+                  title="沿 y = x 切 x² + y²")
 

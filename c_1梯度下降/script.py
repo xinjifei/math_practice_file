@@ -11,7 +11,8 @@ import numpy as np
 xy_0 = np.array([20,30])
 # 求梯度函数
 
-step = 100
+func = "F = (x^2 + y^2)"
+step = 9
 lr = 0.1
 xy_0 = np.array([20,30])
 
@@ -48,7 +49,11 @@ def show(step, grad, new_xy, loss,):
 
 new_xy = None
 # 循环下降
-print(f"======gradient_descent======\nlearning rate = {lr}\nsteps = {step + 1}\n")
+print(f"======gradient_descent======")
+print(f"funcion = {func}")
+print(f"xy_0 = {xy_0}")
+print(f"learning rate = {lr}")
+print(f"steps = {step + 1}\n")
 
 for i in range(step):
     # 下降
