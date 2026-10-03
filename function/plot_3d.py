@@ -19,7 +19,8 @@
 #   统一入口 plot_3d(layers, ...)，layers 每层靠 type 区分：
 #     {"type": "point",  "data": np.array([[x, y, z], ...]),  # 每行一个 xyz
 #      "labels": [...], "color": ..., "s": ...}
-#     {"type": "vector", "data": [{"v1": [x, y, z]}, ...]}    # 沿用旧数据结构
+#     {"type": "vector", "data": [{"v1": [x, y, z]}, ...],     # 沿用旧数据结构
+#      "s": 8}                                                 # 可选：尖端小球大小（默认 2）
 #
 # point 层的 numpy 数组会自动补零：
 #   - 1 个数 [x]            → (x, 0, 0)
@@ -95,6 +96,9 @@ def _draw_vectors_3d(fig, layer):
     if not vectors:
         raise ValueError("vector 层的 data 不能为空，至少给一个向量")
 
+    # 尖端小球大小：和 point 层一个写法，认 s / size，默认 2（和以前一样）
+    head_size = layer.get("s", layer.get("size", 2))
+
     names = []
     segs = []   # 每个元素 = (起点 [x,y,z], 终点 [x,y,z])
     for d in vectors:
@@ -130,7 +134,7 @@ def _draw_vectors_3d(fig, layer):
         # 终点：用点标记，并把名字标在旁边
         fig.add_trace(go.Scatter3d(
             x=[x2], y=[y2], z=[z2], mode="markers+text", text=[name],
-            marker=dict(color=color, size=2),
+            marker=dict(color=color, size=head_size),
             textfont=dict(color=color, size=12), showlegend=False))
 
     return [tuple(p1) for p1, p2 in segs] + [tuple(p2) for p1, p2 in segs]
@@ -180,7 +184,7 @@ def _finalize_3d(fig, all_pts, title):
     )
 
 
-def plot_3d(layers, title="图", show=True):
+def plot_3d(layers, title="图", show=True, fig=None):
     """一个函数画三维点 / 向量，可叠加在同一画布（plotly）。
 
     参数:
@@ -189,12 +193,16 @@ def plot_3d(layers, title="图", show=True):
               {"type": "point",  "data": np.array([[x, y, z], ...]),
                "labels": [...], "color": "#1f77b4", "s": 8}
                 data 是 (n, 3) 矩阵（也支持 (n,1)/(n,2)/标量/一维，自动补零到三维）
-              {"type": "vector", "data": [{"v1": [x, y, z]}, ...]}
+              {"type": "vector", "data": [{"v1": [x, y, z]}, ...], "s": 8}
                 data 沿用向量数据结构，每个 {名字: 坐标}，坐标 3 或 6 个数
+                可选 s / size：箭头尖端那个小球的大小（默认 2）
         title : str
             图标题
         show : bool
             True 则画完直接 show
+        fig : plotly.graph_objects.Figure 或 None
+            指定已有画布（照二维版 plot(ax=...) 的样子）。给了就往上面叠，
+            不再新建、也不重复加参考轴 / 改坐标范围 —— 用来把向量叠到曲面上
 
     返回:
         plotly.graph_objects.Figure
@@ -208,7 +216,9 @@ def plot_3d(layers, title="图", show=True):
     if not layers:
         raise ValueError("layers 不能为空，至少给一层")
 
-    fig = go.Figure()
+    fresh = fig is None
+    if fresh:
+        fig = go.Figure()
 
     all_pts = []
     for layer in layers:
@@ -219,14 +229,15 @@ def plot_3d(layers, title="图", show=True):
             )
         all_pts += _DRAWERS_3D[t](fig, layer)
 
-    _finalize_3d(fig, all_pts, title)
+    if fresh:                       # 只有新建画布时才定界 / 加参考轴；
+        _finalize_3d(fig, all_pts, title)   # 叠到已有画布上时，坐标范围和轴都交给它
     if show:
         fig.show()
     return fig
 
 
-def plot_vectors_3d(vectors, title="向量图"):
-    """画一组带名字的三维向量（旧接口，内部走 plot_3d，签名不变）。
+def plot_vectors_3d(vectors, title="向量图", fig=None, show=True, **layer_kwargs):
+    """画一组带名字的三维向量（旧接口，内部走 plot_3d）。
 
     参数:
         vectors : list[dict]
@@ -234,11 +245,20 @@ def plot_vectors_3d(vectors, title="向量图"):
               [x, y, z]                 终点，默认起点 (0,0,0)
               [x1, y1, z1, x2, y2, z2]  起点 (x1,y1,z1)、终点 (x2,y2,z2)
         title   : str
+        fig : plotly.graph_objects.Figure 或 None
+            指定已有画布（比如 plot_surface_3d 返回的那张），把向量叠上去
+        show    : bool
+            True 则画完直接 show
+        **layer_kwargs
+            透传给 vector 图层。比如 s=8 把箭头尖端的小球调大（不传就默认 2）
 
     例子:
         plot_vectors_3d([{"v1": [1, 2, 3]}, {"v2": [0, 0, 0, 1, 2, 3]}], title="测试")
+        plot_vectors_3d([{"v1": [1, 2, 3]}], s=8)      # 小球大一点
     """
-    return plot_3d([{"type": "vector", "data": vectors}], title=title)
+    layer = {"type": "vector", "data": vectors}
+    layer.update(layer_kwargs)
+    return plot_3d([layer], title=title, fig=fig, show=show)
 
 
 def _check_center_radius(cr, name):
