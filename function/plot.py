@@ -14,7 +14,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # 让中文标题能正常显示（不设的话中文会变方块）
-plt.rcParams['font.sans-serif'] = ['SimHei']
+# 坑：SimHei 是 Windows 字体，macOS 上根本没装 —— 只写它一个，Mac 上就找不到字体、中文全变方框。
+# 所以给一串候选，matplotlib 会跳过没装的、用第一个装了的。
+# 顺序：macOS → Windows → Linux → 兜底。matplotlib 3.6+ 支持逐字回退，列表长一点没坏处。
+plt.rcParams['font.sans-serif'] = [
+    'PingFang SC', 'Hiragino Sans GB', 'Songti SC', 'Heiti SC',   # macOS
+    'Microsoft YaHei', 'SimHei',                                   # Windows
+    'Noto Sans CJK SC', 'WenQuanYi Micro Hei',                     # Linux
+    'Arial Unicode MS',                                            # 兜底
+]
 plt.rcParams['axes.unicode_minus'] = False
 
 
