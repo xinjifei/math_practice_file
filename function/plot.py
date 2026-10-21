@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-# plot.py —— 一个函数画点 / 向量（可叠加在同一画布）
+# plot.py —— 一个函数画点 / 向量 / 线（可叠加在同一画布）
 #
 # 统一入口 plot(layers, ...)，layers 每层靠 type 区分：
 #   {"type": "point",  "data": np.array([[x, y], ...]),  # 每行一个 xy
 #    "labels": [...], "color": ..., "s": ...}
 #   {"type": "vector", "data": [{"v1": [2, 0]}, ...]}    # 沿用旧数据结构
+#   {"type": "line",   "data": np.array([[x, y], ...]),  # 每行一个顶点，按行顺序连
+#    "color": 不传则自动配色, "linestyle": 默认 "--", "linewidth": 默认 2}
 #
 # 向量坐标两种形式：
 #   - 2 个数 [x, y]            ：终点，默认起点 (0,0)
@@ -24,6 +26,10 @@ plt.rcParams['font.sans-serif'] = [
     'Arial Unicode MS',                                            # 兜底
 ]
 plt.rcParams['axes.unicode_minus'] = False
+
+# 没指定颜色时的自动配色：hsv 把色相环均分成 8 份（和向量层同一套思路，
+# 只是向量层按本层向量个数分，线层按"画布上已经是第几条线"取）
+_AUTO_COLORS = plt.cm.hsv(np.linspace(0, 1, 8, endpoint=False))
 
 
 def _draw_vectors(ax, layer):
@@ -97,10 +103,37 @@ def _draw_points(ax, layer):
     return [(float(x), float(y)) for x, y in pts]
 
 
-# 类型 → 画图函数的分发表；以后加"线"等新类型，只需再写一个 _draw_* 并在此登记
+def _draw_lines(ax, layer):
+    """往 ax 上画一层折线，返回所有顶点坐标（用于自动定界）。"""
+    pts = np.asarray(layer["data"])
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise ValueError(
+            f"line 层的 data 必须是 (n, 2) 矩阵，每行一个 [x, y]，收到形状 {pts.shape}"
+        )
+    if not np.issubdtype(pts.dtype, np.number):
+        raise ValueError(f"line 层的 data 必须是数值，收到 dtype {pts.dtype}")
+    if pts.shape[0] < 2:
+        raise ValueError(f"line 层至少要 2 个点才画得出一条线，收到 {pts.shape[0]} 个")
+
+    # 除 type/data 外的键都透传给 plot，并给默认值
+    line_kwargs = {k: v for k, v in layer.items()
+                   if k not in ("type", "data")}
+    if "color" not in line_kwargs:
+        # 取色相环上的下一个颜色：连续加几层线时颜色不会撞
+        line_kwargs["color"] = _AUTO_COLORS[len(ax.lines) % len(_AUTO_COLORS)]
+    line_kwargs.setdefault("linestyle", "--")
+    line_kwargs.setdefault("linewidth", 2)
+
+    ax.plot(pts[:, 0], pts[:, 1], **line_kwargs)
+
+    return [(float(x), float(y)) for x, y in pts]
+
+
+# 类型 → 画图函数的分发表；以后再加新类型，只需再写一个 _draw_* 并在此登记
 _DRAWERS = {
     "point": _draw_points,
     "vector": _draw_vectors,
+    "line": _draw_lines,
 }
 
 
@@ -121,7 +154,7 @@ def _finalize(ax, all_pts, title):
 
 
 def plot(layers, title="图", ax=None, show=True):
-    """一个函数画点 / 向量，可叠加在同一画布。
+    """一个函数画点 / 向量 / 线，可叠加在同一画布。
 
     参数:
         layers : list[dict]
@@ -131,6 +164,10 @@ def plot(layers, title="图", ax=None, show=True):
                 data 是 (n, 2) 矩阵，每行一个 [x, y]
               {"type": "vector", "data": [{"v1": [2, 0]}, ...]}
                 data 沿用向量数据结构，每个 {名字: 坐标}，坐标 2 或 4 个数
+              {"type": "line",   "data": np.array([[x, y], ...]),
+               "color": None, "linestyle": "--", "linewidth": 2}
+                data 是 (n, 2) 矩阵，每行一个顶点，按行顺序连成一条折线（至少 2 个点）；
+                color 不传则自动从 hsv 色相环取色，linestyle 不传则默认虚线
         title : str
             图标题
         ax : matplotlib.axes.Axes 或 None
@@ -143,6 +180,8 @@ def plot(layers, title="图", ax=None, show=True):
         plot([{"type": "vector", "data": [{"v1": [2, 0]}]}])
         plot([{"type": "vector", "data": [{"v1": [2, 0]}]},
               {"type": "point",  "data": np.array([[1, 0.5]])}])
+        plot([{"type": "line",   "data": np.array([[0, 0], [1, 2], [3, 1]]),
+               "color": "tab:green", "linestyle": "--"}])
     """
     if not layers:
         raise ValueError("layers 不能为空，至少给一层")
@@ -182,13 +221,19 @@ def plot_vectors(vectors, title="向量图"):
 
 
 if __name__ == "__main__":
-    # 自测：向量 + 点叠加，验证两种 type 能画到同一画布
+    # 自测：向量 + 线 + 点叠加，验证三种 type 能画到同一画布
     plot(
         [{"type": "vector", "data": [{"v1": [2, 0]},
                                      {"v2": [0, 0, 0, 1]},
                                      {"v3": [1, 1, 3, 2]}]},
+         {"type": "line",   "data": np.array([[0.0, 0.0],
+                                              [1.0, 2.0],
+                                              [2.5, 0.5]])},
+         {"type": "line",   "data": np.array([[-1.0, 1.0],
+                                              [0.5, -0.5],
+                                              [2.0, 1.5]])},
          {"type": "point",  "data": np.array([[1.0, 0.5],
                                               [2.5, 1.0],
                                               [3.0, 2.0]])}],
-        title="自测：向量 + 点叠加",
+        title="自测：向量 + 线 + 点叠加",
     )
